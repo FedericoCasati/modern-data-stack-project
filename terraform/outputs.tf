@@ -3,9 +3,14 @@ output "snowflake_account_identifier" {
   value       = "${var.snowflake_organization}-${var.snowflake_account}"
 }
 
-output "database_name" {
-  description = "Name of the Snowflake database"
-  value       = snowflake_database.learning.name
+output "ingestion_database" {
+  description = "Name of the shared ingestion database"
+  value       = snowflake_database.ingestion.name
+}
+
+output "project_database" {
+  description = "Name of the crypto analytics project database"
+  value       = snowflake_database.crypto_analytics.name
 }
 
 output "warehouse_name" {
@@ -14,11 +19,11 @@ output "warehouse_name" {
 }
 
 output "schema_names" {
-  description = "Names of all schemas"
+  description = "Names of all schemas across both databases"
   value = {
-    ingestion = snowflake_schema.ingestion.name
-    staging   = snowflake_schema.staging.name
-    marts     = snowflake_schema.marts.name
+    ingestion_coingecko = "${snowflake_database.ingestion.name}.${snowflake_schema.coingecko.name}"
+    project_staging     = "${snowflake_database.crypto_analytics.name}.${snowflake_schema.staging.name}"
+    project_marts       = "${snowflake_database.crypto_analytics.name}.${snowflake_schema.marts.name}"
   }
 }
 
