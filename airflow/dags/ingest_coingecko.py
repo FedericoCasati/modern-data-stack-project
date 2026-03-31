@@ -1,0 +1,202 @@
+"""
+DAG: ingest_coingecko
+Extracts crypto market data from CoinGecko API, stages it in Snowflake,
+and loads it into INGESTION_DB.COINGECKO.raw_crypto_market via COPY INTO.
+"""
+
+from datetime import datetime, timedelta
+import json
+import logging
+import os
+import tempfile
+
+import requests
+import snowflake.connector
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+SNOWFLAKE_CONFIG = {
+    "account": os.environ["SNOWFLAKE_ACCOUNT"],
+    "user": os.environ["SNOWFLAKE_USER"],
+    "password": os.environ["SNOWFLAKE_PASSWORD"],
+    "warehouse": os.environ["SNOWFLAKE_WAREHOUSE"],
+    "role": os.environ["SNOWFLAKE_ROLE"],
+}
+
+COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
+COINGECKO_PARAMS = {
+    "vs_currency": "usd",
+    "order": "market_cap_desc",
+    "per_page": 50,
+    "page": 1,
+    "sparkline": "false",
+}
+
+TARGET_DATABASE = "INGESTION_DB"
+TARGET_SCHEMA = "COINGECKO"
+TARGET_TABLE = "RAW_CRYPTO_MARKET"
+FULLY_QUALIFIED_TABLE = f"{TARGET_DATABASE}.{TARGET_SCHEMA}.{TARGET_TABLE}"
+
+# ---------------------------------------------------------------------------
+# DAG default args
+# ---------------------------------------------------------------------------
+default_args = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
+    "email_on_failure": False,
+}
+
+
+# ---------------------------------------------------------------------------
+# Task functions
+# ---------------------------------------------------------------------------
+def create_table_if_not_exists():
+    """Ensure the raw landing table exists in Snowflake."""
+    conn = snowflake.connector.connect(**SNOWFLAKE_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"USE DATABASE {TARGET_DATABASE}")
+        cur.execute(f"USE SCHEMA {TARGET_SCHEMA}")
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {FULLY_QUALIFIED_TABLE} (
+                ingestion_timestamp  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+                source_api           VARCHAR DEFAULT 'coingecko',
+                raw_payload          VARIANT
+            )
+        """)
+        logger.info(f"Table {FULLY_QUALIFIED_TABLE} is ready.")
+    finally:
+        conn.close()
+
+
+def extract_from_api(**context):
+    """Call CoinGecko API and return JSON response."""
+    logger.info("Calling CoinGecko /coins/markets endpoint...")
+    response = requests.get(COINGECKO_URL, params=COINGECKO_PARAMS, timeout=30)
+    response.raise_for_status()
+
+    data = response.json()
+    logger.info(f"Received {len(data)} coins from CoinGecko.")
+
+    # Push the JSON string to XCom so the next task can pick it up
+    context["ti"].xcom_push(key="raw_json", value=json.dumps(data))
+
+
+def stage_and_load(**context):
+    """Write JSON to a temp file, PUT to Snowflake stage, COPY INTO table."""
+    raw_json = context["ti"].xcom_pull(key="raw_json", task_ids="extract_from_api")
+    if not raw_json:
+        raise ValueError("No data received from extract task.")
+
+    # Wrap each coin as a row-level JSON object with metadata
+    records = json.loads(raw_json)
+    # Write as newline-delimited JSON (NDJSON) — one object per line
+    ndjson_lines = [json.dumps(record) for record in records]
+    ndjson_content = "\n".join(ndjson_lines)
+
+    conn = snowflake.connector.connect(**SNOWFLAKE_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"USE DATABASE {TARGET_DATABASE}")
+        cur.execute(f"USE SCHEMA {TARGET_SCHEMA}")
+
+        # Write to a temp file
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as tmp:
+            tmp.write(ndjson_content)
+            tmp_path = tmp.name
+
+        logger.info(f"Wrote {len(records)} records to {tmp_path}")
+
+        # PUT file to table stage
+        cur.execute(
+            f"PUT 'file://{tmp_path}' @%{TARGET_TABLE} AUTO_COMPRESS=TRUE OVERWRITE=TRUE"
+        )
+        logger.info("PUT to stage completed.")
+
+        # COPY INTO table
+        cur.execute(f"""
+            COPY INTO {FULLY_QUALIFIED_TABLE} (raw_payload)
+            FROM @%{TARGET_TABLE}
+            FILE_FORMAT = (TYPE = JSON STRIP_OUTER_ARRAY = FALSE)
+            ON_ERROR = 'CONTINUE'
+        """)
+        copy_result = cur.fetchall()
+        logger.info(f"COPY INTO result: {copy_result}")
+
+        # Clean up stage
+        cur.execute(f"REMOVE @%{TARGET_TABLE}")
+        logger.info("Stage cleaned up.")
+
+        # Clean up temp file
+        os.unlink(tmp_path)
+
+    finally:
+        conn.close()
+
+
+def verify_load():
+    """Run a count query to verify data landed in the table."""
+    conn = snowflake.connector.connect(**SNOWFLAKE_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM {FULLY_QUALIFIED_TABLE}")
+        total_rows = cur.fetchone()[0]
+        logger.info(f"Total rows in {FULLY_QUALIFIED_TABLE}: {total_rows}")
+
+        cur.execute(f"""
+            SELECT COUNT(*)
+            FROM {FULLY_QUALIFIED_TABLE}
+            WHERE ingestion_timestamp >= DATEADD(hour, -1, CURRENT_TIMESTAMP())
+        """)
+        recent_rows = cur.fetchone()[0]
+        logger.info(f"Rows ingested in the last hour: {recent_rows}")
+
+        if recent_rows == 0:
+            raise ValueError("No rows were ingested in the last hour!")
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# DAG definition
+# ---------------------------------------------------------------------------
+with DAG(
+    dag_id="ingest_coingecko",
+    default_args=default_args,
+    description="Ingest crypto market data from CoinGecko into Snowflake",
+    schedule_interval="0 6 * * *",  # Daily at 6 AM UTC
+    start_date=datetime(2026, 3, 31),
+    catchup=False,
+    tags=["ingestion", "coingecko", "snowflake"],
+) as dag:
+
+    t_create_table = PythonOperator(
+        task_id="create_table_if_not_exists",
+        python_callable=create_table_if_not_exists,
+    )
+
+    t_extract = PythonOperator(
+        task_id="extract_from_api",
+        python_callable=extract_from_api,
+    )
+
+    t_load = PythonOperator(
+        task_id="stage_and_load",
+        python_callable=stage_and_load,
+    )
+
+    t_verify = PythonOperator(
+        task_id="verify_load",
+        python_callable=verify_load,
+    )
+
+    t_create_table >> t_extract >> t_load >> t_verify
