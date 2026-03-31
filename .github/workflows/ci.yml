@@ -6,7 +6,7 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  DBT_PROFILES_DIR: ./dbt_project
+  DBT_PROFILES_DIR: ${{ github.workspace }}/dbt_project
 
 jobs:
   # ===========================================================================
