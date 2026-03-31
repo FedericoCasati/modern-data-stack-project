@@ -1,0 +1,122 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  DBT_PROFILES_DIR: ${{ github.workspace }}/dbt_project
+
+jobs:
+  # ===========================================================================
+  # Job 1: Lint Python (Airflow DAGs)
+  # ===========================================================================
+  lint-python:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install linters
+        run: pip install flake8 black
+
+      - name: Run flake8
+        run: flake8 airflow/dags/ --max-line-length 120 --ignore E501,W503
+
+      - name: Run black (check only)
+        run: black --check --line-length 120 airflow/dags/
+
+  # ===========================================================================
+  # Job 2: Validate dbt (slim CI with state comparison)
+  # ===========================================================================
+  validate-dbt:
+    name: Validate dbt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dbt
+        run: pip install dbt-snowflake==1.8.4
+
+      - name: Install dbt packages
+        run: cd dbt_project && dbt deps
+
+      - name: Verify dbt compiles
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+        run: cd dbt_project && dbt compile
+
+      # --- Slim CI (only runs modified models against prod state) ---
+      - name: Download production manifest
+        # This step downloads the manifest.json from the prod-manifest branch.
+        # After each production dbt run, push the manifest to this branch.
+        # For now, we skip if the branch doesn't exist yet.
+        continue-on-error: true
+        run: |
+          git fetch origin prod-manifest --depth=1 2>/dev/null && \
+          git checkout origin/prod-manifest -- manifest.json 2>/dev/null && \
+          mkdir -p prod-state && \
+          mv manifest.json prod-state/manifest.json && \
+          echo "SLIM_CI=true" >> $GITHUB_ENV || \
+          echo "SLIM_CI=false" >> $GITHUB_ENV
+
+      - name: Run dbt slim CI (modified models only)
+        if: env.SLIM_CI == 'true'
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+        run: |
+          cd dbt_project && \
+          dbt build --select state:modified+ --defer --state ../prod-state/
+
+      - name: Run dbt build (full, no prod state yet)
+        if: env.SLIM_CI == 'false'
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+        run: cd dbt_project && dbt build
+
+  # ===========================================================================
+  # Job 3: Validate Terraform
+  # ===========================================================================
+  validate-terraform:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Check formatting
+        run: cd terraform && terraform fmt -check
+
+      - name: Initialize Terraform
+        run: cd terraform && terraform init -backend=false
+
+      - name: Validate configuration
+        run: cd terraform && terraform validate

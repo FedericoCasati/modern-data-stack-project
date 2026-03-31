@@ -46,6 +46,7 @@ FULLY_QUALIFIED_TABLE = f"{TARGET_DATABASE}.{TARGET_SCHEMA}.{TARGET_TABLE}"
 
 DBT_PROJECT_DIR = "/opt/airflow/dbt_project"
 
+
 # ---------------------------------------------------------------------------
 # Failure callback
 # ---------------------------------------------------------------------------
@@ -58,8 +59,7 @@ def on_failure_callback(context):
     exception = context.get("exception")
 
     logger.error(
-        f"TASK FAILED | dag={dag_id} | task={task_id} | "
-        f"execution_date={execution_date} | error={exception}"
+        f"TASK FAILED | dag={dag_id} | task={task_id} | " f"execution_date={execution_date} | error={exception}"
     )
 
 
@@ -127,17 +127,13 @@ def stage_and_load(**context):
         cur.execute(f"USE DATABASE {TARGET_DATABASE}")
         cur.execute(f"USE SCHEMA {TARGET_SCHEMA}")
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
             tmp.write(ndjson_content)
             tmp_path = tmp.name
 
         logger.info(f"Wrote {len(records)} records to {tmp_path}")
 
-        cur.execute(
-            f"PUT 'file://{tmp_path}' @%{TARGET_TABLE} AUTO_COMPRESS=TRUE OVERWRITE=TRUE"
-        )
+        cur.execute(f"PUT 'file://{tmp_path}' @%{TARGET_TABLE} AUTO_COMPRESS=TRUE OVERWRITE=TRUE")
         logger.info("PUT to stage completed.")
 
         cur.execute(f"""
