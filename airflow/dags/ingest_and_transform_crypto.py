@@ -46,6 +46,7 @@ FULLY_QUALIFIED_TABLE = f"{TARGET_DATABASE}.{TARGET_SCHEMA}.{TARGET_TABLE}"
 
 DBT_PROJECT_DIR = "/opt/airflow/dbt_project"
 
+
 # ---------------------------------------------------------------------------
 # Failure callback
 # ---------------------------------------------------------------------------
