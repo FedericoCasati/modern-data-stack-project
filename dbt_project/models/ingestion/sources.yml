@@ -1,0 +1,21 @@
+version: 2
+
+sources:
+  - name: coingecko
+    description: "Raw crypto market data from the CoinGecko API"
+    database: INGESTION_DB
+    schema: COINGECKO
+    tables:
+      - name: raw_crypto_market
+        description: "Raw JSON payloads from /coins/markets endpoint, one row per coin per ingestion run"
+        loaded_at_field: ingestion_timestamp
+        freshness:
+          warn_after: { count: 24, period: hour }
+          error_after: { count: 48, period: hour }
+        columns:
+          - name: ingestion_timestamp
+            description: "Timestamp when the data was ingested into Snowflake"
+          - name: source_api
+            description: "Name of the source API (always 'coingecko')"
+          - name: raw_payload
+            description: "Full JSON object for a single coin from the API response"

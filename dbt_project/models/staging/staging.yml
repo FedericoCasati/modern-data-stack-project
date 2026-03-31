@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: stg_crypto_market
+    description: "Cleaned and structured crypto market data. One row per coin per day, deduplicated by latest ingestion."
+    columns:
+      - name: coin_id
+        description: "Unique CoinGecko identifier for the coin (e.g., 'bitcoin', 'ethereum')"
+        tests:
+          - not_null
+
+      - name: symbol
+        description: "Ticker symbol (e.g., 'btc', 'eth')"
+        tests:
+          - not_null
+
+      - name: coin_name
+        description: "Human-readable coin name"
+        tests:
+          - not_null
+
+      - name: current_price_usd
+        description: "Current price in USD at time of ingestion"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+
+      - name: market_cap_usd
+        description: "Total market capitalization in USD"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+
+      - name: market_cap_rank
+        description: "Rank by market cap (1 = largest)"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 100
+
+      - name: total_volume_usd
+        description: "24-hour trading volume in USD"
+
+      - name: ingestion_date
+        description: "Date the data was ingested (used for deduplication)"
+        tests:
+          - not_null

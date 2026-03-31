@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: daily_market_summary
+    description: "Daily snapshot of each coin's market data with derived metrics like price range and supply percentage."
+    columns:
+      - name: report_date
+        description: "Date of the market snapshot"
+        tests:
+          - not_null
+
+      - name: coin_id
+        description: "CoinGecko coin identifier"
+        tests:
+          - not_null
+
+      - name: current_price_usd
+        description: "Price at time of snapshot"
+        tests:
+          - not_null
+
+      - name: price_range_usd
+        description: "Difference between 24h high and low"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+
+      - name: pct_supply_in_circulation
+        description: "Percentage of max supply currently circulating (null if max_supply unknown)"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              inclusive: true
+              where: "pct_supply_in_circulation IS NOT NULL"
+
+  - name: market_dominance
+    description: "Each coin's share of total market cap across tracked coins."
+    columns:
+      - name: market_dominance_pct
+        description: "Coin's percentage of total tracked market cap"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              inclusive: true
+
+  - name: top_movers_daily
+    description: "All coins ranked by 24h price change - both gainers and losers."
+    columns:
+      - name: price_change_pct_24h
+        description: "24-hour price change as a percentage"
+        tests:
+          - not_null
+
+      - name: rank_by_gain
+        description: "Rank by highest gain (1 = biggest gainer)"
+        tests:
+          - not_null
+
+      - name: rank_by_loss
+        description: "Rank by biggest loss (1 = biggest loser)"
+        tests:
+          - not_null
