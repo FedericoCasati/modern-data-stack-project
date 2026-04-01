@@ -45,23 +45,23 @@ An end-to-end ELT pipeline that ingests cryptocurrency market data from the Coin
 
 ## Data Flow
 
-**1. Ingestion** — Airflow calls the CoinGecko `/coins/markets` endpoint daily, fetching the top 50 cryptocurrencies by market cap. The raw JSON is written to a temp file, uploaded to a Snowflake internal stage via `PUT`, then loaded into `INGESTION_DB.COINGECKO.RAW_CRYPTO_MARKET` using `COPY INTO`. Each coin is stored as a `VARIANT` (raw JSON) row with an ingestion timestamp.
+**1. Ingestion**: Airflow calls the CoinGecko `/coins/markets` endpoint daily, fetching the top 50 cryptocurrencies by market cap. The raw JSON is written to a temp file, uploaded to a Snowflake internal stage via `PUT`, then loaded into `INGESTION_DB.COINGECKO.RAW_CRYPTO_MARKET` using `COPY INTO`. Each coin is stored as a `VARIANT` (raw JSON) row with an ingestion timestamp.
 
-**2. Staging** — dbt reads from the raw table, flattens the JSON into typed columns (price, market cap, volume, supply metrics, all-time highs/lows), deduplicates by coin and date, and materializes as an incremental model in `CRYPTO_ANALYTICS_DB.STAGING`.
+**2. Staging**: dbt reads from the raw table, flattens the JSON into typed columns (price, market cap, volume, supply metrics, all-time highs/lows), deduplicates by coin and date, and materializes as an incremental model in `CRYPTO_ANALYTICS_DB.STAGING`.
 
-**3. Marts** — Three business-level models in `CRYPTO_ANALYTICS_DB.MARTS`:
-- **daily_market_summary** — Daily snapshot per coin with price range, supply percentage, and all key metrics
-- **market_dominance** — Each coin's share of total tracked market cap, using window functions
-- **top_movers_daily** — Coins ranked by 24h price change (biggest gainers and losers)
+**3. Marts**: Three business-level models in `CRYPTO_ANALYTICS_DB.MARTS`:
+- **daily_market_summary**: Daily snapshot per coin with price range, supply percentage, and all key metrics
+- **market_dominance**: Each coin's share of total tracked market cap, using window functions
+- **top_movers_daily**: Coins ranked by 24h price change (biggest gainers and losers)
 
-**4. Testing** — 19 dbt data tests validate not-null constraints, accepted ranges (prices > 0, dominance between 0-100%), and data integrity across all layers.
+**4. Testing**: 19 dbt data tests validate not-null constraints, accepted ranges (prices > 0, dominance between 0-100%), and data integrity across all layers.
 
 ## Database Architecture
 
 The project uses a multi-database pattern that mirrors production best practices:
 
-- **INGESTION_DB** — Shared raw data lake. One schema per source (e.g., `COINGECKO`). Raw API responses stored as-is. Designed to be reused across multiple downstream projects.
-- **CRYPTO_ANALYTICS_DB** — Project-specific transformations. Contains `STAGING` (cleaned, structured data) and `MARTS` (business aggregations). Each analytics project gets its own database.
+- **INGESTION_DB**: Shared raw data lake. One schema per source (e.g., `COINGECKO`). Raw API responses stored as-is. Designed to be reused across multiple downstream projects.
+- **CRYPTO_ANALYTICS_DB**: Project-specific transformations. Contains `STAGING` (cleaned, structured data) and `MARTS` (business aggregations). Each analytics project gets its own database.
 
 This separation means raw data is ingested once and consumed by many projects, while each project's transformations are isolated.
 
@@ -174,21 +174,21 @@ SELECT * FROM CRYPTO_ANALYTICS_DB.MARTS.TOP_MOVERS_DAILY WHERE rank_by_gain <= 5
 
 ## Key Design Decisions
 
-- **COPY INTO over INSERT** — Production Snowflake pipelines use internal stages + `COPY INTO` for idempotent, scalable loads. Raw `INSERT` statements don't scale.
-- **Incremental models** — The staging model uses `is_incremental()` to only process new data, avoiding full-table scans on every run.
-- **Multi-database architecture** — Ingestion is separated from project-specific transformations, allowing raw data reuse across projects.
-- **Terraform for Snowflake** — All infrastructure is version-controlled and reproducible. No manual clicking in the Snowflake UI.
-- **Source freshness checks** — dbt checks that ingestion data isn't stale before running transformations.
-- **Failure callbacks + SLA** — Airflow logs detailed error info on task failure and flags tasks that exceed 1-hour SLA.
-- **Custom schema macro** — Overrides dbt's default schema concatenation behavior to use exact schema names.
+- **COPY INTO over INSERT**: Production Snowflake pipelines use internal stages + `COPY INTO` for idempotent, scalable loads. Raw `INSERT` statements don't scale.
+- **Incremental models**: The staging model uses `is_incremental()` to only process new data, avoiding full-table scans on every run.
+- **Multi-database architecture**: Ingestion is separated from project-specific transformations, allowing raw data reuse across projects.
+- **Terraform for Snowflake**: All infrastructure is version-controlled and reproducible. No manual clicking in the Snowflake UI.
+- **Source freshness checks**: dbt checks that ingestion data isn't stale before running transformations.
+- **Failure callbacks + SLA**: Airflow logs detailed error info on task failure and flags tasks that exceed 1-hour SLA.
+- **Custom schema macro**: Overrides dbt's default schema concatenation behavior to use exact schema names.
 
 ## What I Learned
 
-- **Dependency resolution matters** — Pinning dbt and Airflow provider versions in the Dockerfile prevents 30+ minute pip backtracking during builds.
-- **Ambiguous columns in incremental models** — Snowflake's merge statement during incremental runs can cause column name collisions. Aliasing source columns in the first CTE prevents this.
-- **dbt schema naming** — By default, dbt prepends the target schema to custom schemas (e.g., `STAGING_MARTS`). A custom `generate_schema_name` macro is required to use exact schema names.
-- **Terraform state management** — `terraform plan` before every `apply` is essential. Infrastructure changes are reviewable diffs, just like code.
-- **CI catches real issues** — The GitHub Actions pipeline caught formatting issues and path configuration errors before they reached main.
+- **Dependency resolution matters**: Pinning dbt and Airflow provider versions in the Dockerfile prevents 30+ minute pip backtracking during builds.
+- **Ambiguous columns in incremental models**: Snowflake's merge statement during incremental runs can cause column name collisions. Aliasing source columns in the first CTE prevents this.
+- **dbt schema naming**: By default, dbt prepends the target schema to custom schemas (e.g., `STAGING_MARTS`). A custom `generate_schema_name` macro is required to use exact schema names.
+- **Terraform state management**: `terraform plan` before every `apply` is essential. Infrastructure changes are reviewable diffs, just like code.
+- **CI catches real issues**: The GitHub Actions pipeline caught formatting issues and path configuration errors before they reached main.
 
 ## License
 
